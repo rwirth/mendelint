@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+import sys
+import bibtexparser
+import re
+
+unicode_trans = {
+    #r'~': u'\xa0',
+    r'$\pm$': u'±',
+    r'$\times$': u'×',
+    r'{\textendash}': u'\u2013',
+    r'{\textemdash}': u'\u2014',
+    r'{\textquotedblleft}': u'“',
+    r'{\textquotedblright}': u'”',
+    r'{\textasciiacute}': u'\u2032',
+    r'{\textrightarrow}': u'→',
+    r'${}-{}$': u'\u2212',
+    r'${}\ast{}$': u'\u2217',
+    r'${}\geq{}$': u'\u2265',
+    r'${}\odot{}$': u'\u2299',
+    r'\v{c}': u'č',
+    r'\v{C}': u'Č',
+    r'{\DJ}': u'Ð',
+    r'\v{s}': u'š',
+    r'\v{S}': u'Š',
+    r'\v{z}': u'ž',
+    r'\v{Z}': u'Ž',
+    r"\'{a}": u'á',
+    r"\'{A}": u'Á',
+    r"\'{c}": u'ć',
+    r"\'{C}": u'Ć',
+    r"\'{\i}": u'í',
+    r"\'{i}": u'í',
+    r"\'{o}": u'ó',
+    r"\'{O}": u'Ó',
+    r"\'{y}": u'ý',
+    r'\"{a}': u'ä',
+    r'\"{A}': u'Ä',
+    r'\"{o}': u'ö',
+    r'\"{O}': u'Ö',
+    r'\"{u}': u'ü',
+    r'\"{U}': u'Ü',
+    r'\^{e}': u'ê',
+    r'\^{o}': u'ô',
+    r'\^{O}': u'Ô',
+    r'\'{e}': u'é',
+    r'\`{a}': u'à',
+    r'\`{e}': u'è',
+    r'\~{n}': u'ñ',
+    r'\~{a}': u'ã',
+    r'\={o}': u'ō',
+    r'\={O}': u'Ō',
+    r'{\ss}': u'ß',
+}
+
+months = {
+    'jan': 1,
+    'feb': 2,
+    'mar': 3,
+    'apr': 4,
+    'may': 5,
+    'jun': 6,
+    'jul': 7,
+    'aug': 8,
+    'sep': 9,
+    'oct':10,
+    'nov':11,
+    'dec':12
+}
+
+def invert_mapping(dict_):
+    k, v = zip(*dict_.items())
+
+    uniques = {}
+    duplicates = []
+    for key, value in dict_.items():
+        if value in uniques:
+            duplicates.append((value, key, uniques[value]))
+        else:
+            uniques[value] = key
+
+    if len(duplicates) > 0:
+        raise ValueError('Values are not unique: {}'.format(duplicates))
+
+    return uniques
+
+def read_config():
+    from ConfigParser import SafeConfigParser
+    import os.path
+    config = SafeConfigParser()
+    config.read(['mendelint.conf', os.path.expanduser('~/.local/share/mendelint/mendelint.conf')])
+
+    sns = {}
+    lns = {}
+    alts = {}
+
+    for journal_id in config.sections():
+        shortname = config.get(journal_id, 'short')
+        longname = config.get(journal_id, 'long')
+        alt_list = []
+        while True:
+            altname = 'alt{}'.format(len(alt_list))
+            if not config.has_option(journal_id, altname):
+                break
+
+            alt = config.get(journal_id, altname).decode('utf-8')
+            alt_list.append(alt)
+
+        sns[journal_id] = shortname.decode('utf-8')
+        lns[journal_id] = longname.decode('utf-8')
+
+        for alt in alt_list:
+            if alt in alts:
+                raise ValueError('Alternative "{0}" is already registered for jid {1}, cannot register for {2}'.format(alt, alts[alt], journal_id))
+            alts[alt] = journal_id
+
+    return sns, lns, alts
+
+def write_config(fp, sns, lns, alts):
+    from ConfigParser import SafeConfigParser
+    config = SafeConfigParser()
+
+    for journal_id in sorted(sns):
+        config.add_section(journal_id)
+        config.set(journal_id, 'short', sns[journal_id])
+        config.set(journal_id, 'long', lns[journal_id])
+
+        altid = 0
+        for alt, jid in alts.items():
+            if jid == journal_id:
+                config.set(journal_id, 'alt{}'.format(altid), alt)
+                altid += 1
+
+    config.write(fp)
+
+def convert_to_unicode(record):
+    def ltu(string):
+        def _ltu(s):
+            import itertools
+            import unicodedata
+            from bibtexparser.latexenc import _replace_all_latex, unicode_to_crappy_latex1, unicode_to_crappy_latex2, unicode_to_latex
+            s = _replace_all_latex(s, itertools.chain(unicode_to_crappy_latex1, unicode_to_latex))
+            s = _replace_all_latex(s, unicode_to_crappy_latex2)
+            s = re.sub(r'[{]([^A-Z\\}])[}]', r'\1', s)
+            return unicodedata.normalize('NFC', u''.join(s))
+
+        if isinstance(string, bibtexparser.bibdatabase.BibDataStringExpression):
+            string.apply_on_strings(_ltu)
+        else:
+            string = _ltu(string)
+        return string
+
+    for key in record:
+        if isinstance(record[key], list):
+            record[key] = [ ltu(v) for v in record[key] ]
+        elif isinstance(record[key], dict):
+            record[key] = { k: ltu(v) for k, v in record[key].items() }
+        else:
+            record[key] = ltu(record[key])
+
+    return record
+
+class MyBibTexWriter(bibtexparser.bwriter.BibTexWriter):
+    pass
+#    def _entry_to_bibtex(self, entry):
+#        bibtex = ''
+#        # Write BibTeX key
+#        bibtex += u'@' + entry['type'] + u'{' + entry['id'].decode('UTF8')
+#
+#        # Write field = value lines
+#        for field in [i for i in sorted(entry) if i not in ['type', 'id']]:
+#            fieldname = field if field != '_type' else 'type'
+#            try:
+#                if isinstance(entry[field], list):
+#                    bibtex += ",\n" + self.indent + fieldname + " = " + entry[field][0]
+#                elif entry[field].startswith('{') and entry[field].endswith('}'):
+#                    bibtex += ",\n" + self.indent + fieldname + " = " + entry[field]
+#                else:
+#                    bibtex += ",\n" + self.indent + fieldname + " = {" + entry[field] + "}"
+#            except TypeError:
+#                raise TypeError("The field %s in entry %s must be a string"
+#                                % (field, entry['id']))
+#        bibtex += "\n}\n" + self.entry_separator
+#        return bibtex
+
+########## Hack the BibTexParser not to remove double braces around titles
+def hack_strip_braces():
+    def _hacked_strip_braces(self, val):
+        """Strip braces enclosing string
+
+        :param val: a value
+        :type val: string
+        :returns: string -- value
+        """
+        bibtexparser.bparser.logger.debug('Strip braces')
+        val = val.strip()
+        if val.startswith('{') and val.endswith('}') and not (val.startswith('{{') and val.endswith('}}')) and self._full_span(val):
+            return val[1:-1]
+        return val
+
+    bibtexparser.bparser.BibTexParser._strip_braces = _hacked_strip_braces
+
+#hack_strip_braces()
+
+def monkeypatch_ConfigParser():
+    def write(self, fp):
+        """Write an .ini-format representation of the configuration state."""
+        if self._defaults:
+            fp.write("[%s]\n" % DEFAULTSECT)
+            for (key, value) in self._defaults.items():
+                fp.write("%s = %s\n" % (key, str(value).replace('\n', '\n\t')))
+            fp.write("\n")
+        for section in self._sections:
+            fp.write("[%s]\n" % section)
+            for (key, value) in self._sections[section].items():
+                if key == "__name__":
+                    continue
+                if (value is not None) or (self._optcre == self.OPTCRE):
+                    if isinstance(value, unicode):
+                        value = value.encode('utf-8')
+                    else:
+                        value = str(value)
+                    key = " = ".join((key, value.replace('\n', '\n\t')))
+                fp.write("%s\n" % (key))
+            fp.write("\n")
+
+    from ConfigParser import RawConfigParser
+    RawConfigParser.write = write
+monkeypatch_ConfigParser()
+
+
+if len(sys.argv) < 2:
+    print 'Usage: mendelint --abbrev|--long'
+    print '       mendelint --clean|--cleanascii [--etal] <file>'
+    sys.exit(1)
+
+
+shortnames, longnames, alternatives = read_config()
+inv_shortnames = invert_mapping(shortnames)
+inv_longnames = invert_mapping(longnames)
+
+
+if sys.argv[1] == '--print-config':
+    write_config(sys.stdout, shortnames, longnames, alternatives)
+
+elif sys.argv[1] == '--abbrev' or sys.argv[1] == '--long':
+    namelist = shortnames if sys.argv[1] == '--abbrev' else longnames
+    for jid, name in sorted(namelist.items()):
+        print u'@string{{{0} = "{1}"}}'.format(jid, name).encode('UTF8')
+
+elif sys.argv[1] == '--clean' or sys.argv[1] == '--cleanascii':
+    clean = 'utf8' if sys.argv[1] == '--clean' else 'ascii'
+
+    if sys.argv[2] == '--etal':
+        etal = True
+        inputfile = sys.argv[3]
+    else:
+        etal = False
+        inputfile = sys.argv[2]
+
+    with open(inputfile, 'r') as bibtex_file:
+        parser = bibtexparser.bparser.BibTexParser(ignore_nonstandard_types=False, interpolate_strings=False)
+        bibtex_db = parser.parse(bibtex_file.read())
+
+    # remove duplicates
+    ids = set()
+    for entry in bibtex_db.entries:
+        if entry['ID'] in ids:
+            sys.stderr.write('INFO: removed duplicate entry {0}\n'.format(entry['ID']))
+            bibtex_db.entries.remove(entry)
+        else:
+            ids.add(entry['ID'])
+
+    if clean == 'utf8':
+        bibtex_db.entries = [ convert_to_unicode(e) for e in bibtex_db.entries ]
+
+    for entry in bibtex_db.entries:
+        if 'author' in entry:
+            authors = entry['author'].split(' and ')
+            if etal and len(authors) > 4:
+                entry['author'] = ' and '.join(authors[0:3]) + ' and others'
+
+        if 'month' in entry:
+            if re.match('^([1-9]|1[0-2])$', entry['month']) is None:
+                if entry['month'] not in months:
+                    sys.stderr.write('WARN: Unrecognized month value: {0}\n'.format(entry['month']).encode('UTF8'))
+                else:
+                    entry['month'] = str(months[entry['month']])
+
+        entry['ID'] = entry['ID'].replace(u'Ð', 'D')
+        if 'journal' in entry:
+            # wrap in function to return to the right place.
+            def _process_journal():
+                journal = entry['journal']
+                orig_journal = journal
+
+                if isinstance(journal, bibtexparser.bibdatabase.BibDataStringExpression):
+                    if len(journal.expr) == 1 and isinstance(journal.expr[0], bibtexparser.bibdatabase.BibDataString):
+                        if journal.expr[0].name in shortnames.keys():
+                            # Valid reference to journal name.
+                            return
+
+                    try:
+                        journal = bibtexparser.bibdatabase.as_text(journal)
+                    except:
+                        sys.stderr.write(u'WARN: abbreviation key {0} not found and interpolation failed\n'.format(journal).encode('UTF8'))
+                        # Nothing we can do. Write back to file as-is.
+                        return
+
+                if 'volume' in entry:
+                    m = re.search('^([A-Za-z])+', entry['volume'])
+                    if m:
+                        entry['volume'] = entry['volume'][len(m.group(0)):]
+                        journal += ' {}'.format(m.group(0))
+
+                # At this point: journal was initially a string or an unknown reference for which interpolation succeeded.
+                if journal in inv_longnames:
+                    journal = bibtexparser.bibdatabase.BibDataString(bibtex_db, inv_longnames[journal])
+                elif journal in inv_shortnames:
+                    journal = bibtexparser.bibdatabase.BibDataString(bibtex_db, inv_shortnames[journal])
+                elif journal in alternatives:
+                    journal = bibtexparser.bibdatabase.BibDataString(bibtex_db, alternatives[journal])
+                else:
+                    sys.stderr.write(u'WARN: journal {0} not found in list\n'.format(journal).encode('UTF8'))
+                    # Use original if not found in case it was an interpolated string.
+                    journal = orig_journal
+
+                entry['journal'] = bibtexparser.bibdatabase.BibDataStringExpression.expression_if_needed([journal])
+
+            _process_journal()
+
+        if 'journal' in entry and 'series' in entry:
+            del entry['series']
+
+    from collections import OrderedDict
+    bibtex_db.strings = OrderedDict()
+    out = MyBibTexWriter().write(bibtex_db)
+
+    if sys.argv[1] == '--clean':
+        #for needle, repl in unicode_trans.items():
+            #out = out.replace(needle, repl)
+
+        rx = re.compile(r'\\.{[^}]+}', re.UNICODE)
+        unmatched_replacements = list(rx.finditer(out))
+        if len(unmatched_replacements) > 0:
+            unique_replacements = set([match.group() for match in unmatched_replacements])
+            sys.stderr.write(u'WARN: The following chars were not substituted: {0}\n'.format(u', '.join(sorted(list(unique_replacements)))).encode('UTF8'))
+    else:
+        # reverse to get clean ASCII
+        for repl, needle in unicode_trans.items():
+            out = out.replace(needle, repl)
+
+        unreplaced_unicodes = set(re.sub('[\x00-\x7f]', '', out))
+        if unreplaced_unicodes:
+            sys.stderr.write(u'The following non-ascii characters are still present: {}\n'.format(u', '.join(u'{0}: {0!r}'.format(a) for a in sorted(unreplaced_unicodes))).encode('UTF8'))
+        try:
+            out.encode('ascii')
+        except UnicodeError:
+            sys.stderr.write(u'WARN: The resulting file does not seem to be pure ASCII\n'.encode('UTF8'))
+
+    print out.encode('UTF8')
