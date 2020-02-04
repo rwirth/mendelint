@@ -268,7 +268,7 @@ def clean_file(args, shortnames, longnames, alternatives):
 
         unreplaced_unicodes = set(re.sub('[\x00-\x7f]', '', out))
         if unreplaced_unicodes:
-            sys.stderr.write('The following non-ascii characters are still present: {}\n'.format(', '.join('{0}: {1:04X}'.format(a, ord(a)) for a in sorted(unreplaced_unicodes))))
+            sys.stderr.write('The following non-ascii characters are still present: {}\n'.format(', '.join('{0}: U+{1:04X}'.format(a, ord(a)) for a in sorted(unreplaced_unicodes))))
         try:
             out.encode('ascii')
         except UnicodeError:
@@ -294,7 +294,7 @@ if __name__ == '__main__':
 
     parse_cl = subparsers.add_parser('clean', help='Clean a bib file.')
     parse_cl.add_argument('-a', '--ascii', help='Try to create an ASCII file (default: unicode).', action='store_true')
-    parse_cl.add_argument('-e', '--etal', help='Truncate author list after N authors.', metavar='N', nargs=1, type=int, default=None)
+    parse_cl.add_argument('-e', '--etal', help='Truncate author list after N authors. If given without argument, N=3 is assumed.', metavar='N', nargs='?', type=int, default=None, const=3)
     parse_cl.add_argument('-o', '--output', help='Output file.', type=argparse.FileType('w', encoding='utf8'), default='-')
     parse_cl.add_argument('bibfile', help='Input file.', type=argparse.FileType('r', encoding='utf8'), default='-')
     parse_cl.set_defaults(func=clean_file)
